@@ -2,12 +2,80 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import itertools
+import os
 import project_parameters as pp  # 导入全局参数模块
 from financial_plan_cash_flow_model import get_financial_plan_cash_flow
+
+# --- 尝试导入Cookie管理库 ---
+try:
+    from streamlit_cookies_manager import EncryptedCookieManager
+except ImportError:
+    st.error("需要安装streamlit-cookies-manager库。请运行: pip install streamlit-cookies-manager")
+    st.stop()
+
+# --- 用户数据库 ---
+USER_CREDENTIALS = {
+    "msj01": "888888",
+    "cyt01": "888888"
+}
 
 # 设置页面配置
 st.set_page_config(page_title="新能源项目批量评价系统", layout="wide")
 
+# --- Cookie 管理配置 ---
+cookies = EncryptedCookieManager(
+    password=os.environ.get("COOKIES_PASSWORD", "a_very_secret_password_12345")
+)
+
+if not cookies.ready():
+    st.stop()
+
+def check_login():
+    """改进后的多用户验证逻辑"""
+    # 1. 检查已有的 Cookie 状态
+    if cookies.get("auth_status") == "logged_in":
+        return True
+
+    st.title("新能源项目批量评价系统 - 身份验证")
+    
+    with st.form("login_form"):
+        user_input = st.text_input("账号")
+        pw_input = st.text_input("密码", type="password")
+        submit = st.form_submit_button("登录")
+        
+        if submit:
+            # 2. 检查账号是否存在且密码是否匹配
+            if user_input in USER_CREDENTIALS and USER_CREDENTIALS[user_input] == pw_input:
+                cookies["auth_status"] = "logged_in"
+                cookies["current_user"] = user_input  # 额外记录是哪个用户登录的
+                cookies.save()
+                st.success(f"欢迎回来，{user_input}！正在进入系统...")
+                st.rerun()
+                return True
+            else:
+                st.error("账号或密码不正确，请重试")
+    return False
+
+def logout():
+    """登出逻辑 - 显示在侧边栏顶部"""
+    current_user = cookies.get("current_user", "未知用户")
+    st.sidebar.markdown("---")
+    st.sidebar.write(f"👤 **当前用户**: {current_user}")
+    if st.sidebar.button("🚪 退出登录", use_container_width=True):
+        cookies["auth_status"] = "logged_out"
+        cookies["current_user"] = ""
+        cookies.save()
+        st.rerun()
+    st.sidebar.markdown("---")
+
+# 检查登录状态
+if not check_login():
+    st.stop()
+
+# 在主应用标题前先显示登出功能（侧边栏顶部）
+logout()
+
+# 原有应用代码从这里开始...
 st.title("⚡ 新能源项目全参数批量评价平台")
 st.markdown("---")
 
