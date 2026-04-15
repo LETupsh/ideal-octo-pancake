@@ -187,7 +187,8 @@ if st.button("🚀 开始批量方案计算"):
                     'wind_hours': row['风电利用小时数 (h)'],
                     'pv_hours': row['光伏利用小时数 (h)'],
                     'storage_mwh': row['储能容量 (MWh)'], # 或 row['储能容量 (kWh)']/1000
-                    'price': row['综合电价']
+                    'w_price': row['综合电价'],
+                    'p_price': row['综合电价'],
                 })
         else:
             st.error("请先上传表格文件！")
@@ -208,7 +209,7 @@ if st.button("🚀 开始批量方案计算"):
             progress_bar = st.progress(0)
             num_combos = len(combinations)
             for i, (wm, pm, sm, wp, pp_val) in enumerate(combinations):
-                scenarios.append({'wind_mw': wm, 'pv_mw': pm, 'storage_mwh': sm, 'wind_hours': w_h, 'pv_hours': p_h, 'price': wp})
+                scenarios.append({'wind_mw': wm, 'pv_mw': pm, 'storage_mwh': sm, 'wind_hours': w_h, 'pv_hours': p_h, 'w_price': wp,'p_price': pp_val})
 
     if scenarios:
         results = []
@@ -223,8 +224,8 @@ if st.button("🚀 开始批量方案计算"):
                 'energy_storage_mwh': sc['storage_mwh']
             })
             pp.SELLING_PRICE_PARAMS.update({
-                'wind_price_per_kwh': sc['price'], 
-                'pv_price_per_kwh': sc['price']
+                'wind_price_per_kwh': sc['w_price'], 
+                'pv_price_per_kwh': sc['p_price']
             })
             pp.POWER_GENERATION_PARAMS.update({
                 'wind_hours': sc['wind_hours'], 
@@ -300,7 +301,8 @@ if st.button("🚀 开始批量方案计算"):
                     "风电规模(MW)": sc['wind_mw'],
                     "光伏规模(MW)": sc['pv_mw'],
                     "储能规模(MWh)": sc['storage_mwh'],
-                    "综合电价": sc['price'],
+                    "风电电价": sc['w_price'],
+                    "光伏电价": sc['p_price'],
                     "项目税后IRR": f"{m['P_post_irr_result']*100:.2f}%",
                     "资本金税后IRR": f"{m['C_post_irr_result']*100:.2f}%",
                     "项目税前IRR": f"{m.get('P_pre_irr_result', 0)*100:.2f}%",
