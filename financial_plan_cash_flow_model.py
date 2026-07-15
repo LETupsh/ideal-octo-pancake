@@ -563,10 +563,32 @@ def get_financial_plan_cash_flow(total_years=26):
                              np.array(cash_flow_statement['final_project_metrics']['capital_pre_tax_net_cash_flow'])[C_pre_basic_period]
 
     ###计算资本金度电成本（最终输出）
-    #初始投资
+    
     cost_of_electricity_discount_rate = SELLING_PRICE_PARAMS['cost_of_electricity_discount_rate'] # C48/C205折现率
+    #初始投资
     initial_investment = cash_flow_statement['operating_cash_flow']['initial_investment_cal'][0] + \
                          npf.npv(cost_of_electricity_discount_rate,[0] + cash_flow_statement['operating_cash_flow']['initial_investment_cal'][1:])
+
+    #初始静态投资NPV 新增
+    SI_npv_result = cash_flow_statement['investment_cash_flow']['construction_investment'][0] + \
+                    npf.npv(cost_of_electricity_discount_rate,[0] + cash_flow_statement['investment_cash_flow']['construction_investment'][1:])
+
+    #增值税抵扣NPV 新增
+    VDI_npv_result = annual_profit_data['vat_deductible_income'][0] +\
+                     npf.npv(cost_of_electricity_discount_rate,[0] + annual_profit_data['vat_deductible_income'][1:])
+
+    #回收固定资产余值/残值 新增
+    FAS_npv_result = cash_flow_statement['investment_cash_flow']['fixed_asset_salvage'][0] + \
+                     npf.npv(cost_of_electricity_discount_rate,[0] + cash_flow_statement['investment_cash_flow']['fixed_asset_salvage'][1:])
+
+    #运营成本 新增
+    TOC_npv_result = annual_cost_data['total_operating_cost'][0] +\
+                     npf.npv(cost_of_electricity_discount_rate,[0] + annual_cost_data['total_operating_cost'][1:])
+
+    #上网电量NPV 新增
+    TSEB_npc_result = annual_profit_data['total_sale_electricity_billion_kwh'][0] +\
+                      npf.npv(cost_of_electricity_discount_rate,[0] + annual_profit_data['total_sale_electricity_billion_kwh'][1:])
+    
     #每年进项抵扣（暂时空着）
     input_tax_deduction = 0
     #每年经营成本
@@ -574,9 +596,7 @@ def get_financial_plan_cash_flow(total_years=26):
                          npf.npv(cost_of_electricity_discount_rate,[0] + cash_flow_statement['operating_cash_flow']['annual_operating_cost_cal'][1:])
 
     #度电成本LCOE C206
-    LCOE = (initial_investment - input_tax_deduction + annual_operating_cost - \
-            npf.npv(cost_of_electricity_discount_rate,[0] + project_cash_inflow_data['salvage_value']))/ \
-            npf.npv(cost_of_electricity_discount_rate,[0] + annual_profit_data['total_sale_electricity_billion_kwh'])/10000
+    LCOE = (SI_npv_result - VDI_npv_result - FAS_npv_result + TOC_npv_result) / TSEB_npc_result / 10000
 
     #税费成本
     annual_taxes = cash_flow_statement['operating_cash_flow']['annual_taxes_cal'][0] + \
