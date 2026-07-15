@@ -20,7 +20,7 @@ USER_CREDENTIALS = {
 }
 
 # 设置页面配置
-st.set_page_config(page_title="新能源项目批量评价系统", layout="wide")
+st.set_page_config(page_title="风光储系统经济性评价平台", layout="wide")
 
 # --- Cookie 管理配置 ---
 cookies = EncryptedCookieManager(
@@ -36,7 +36,7 @@ def check_login():
     if cookies.get("auth_status") == "logged_in":
         return True
 
-    st.title("新能源项目批量评价系统 - 身份验证")
+    st.title("风光储系统经济性评价平台 - 身份验证")
     
     with st.form("login_form"):
         user_input = st.text_input("账号")
@@ -60,8 +60,8 @@ def logout():
     """登出逻辑 - 显示在侧边栏顶部"""
     current_user = cookies.get("current_user", "未知用户")
     st.sidebar.markdown("---")
-    st.sidebar.write(f"👤 **当前用户**: {current_user}")
-    if st.sidebar.button("🚪 退出登录", use_container_width=True):
+    st.sidebar.write(f"**当前用户**: {current_user}")
+    if st.sidebar.button("退出登录", use_container_width=True):
         cookies["auth_status"] = "logged_out"
         cookies["current_user"] = ""
         cookies.save()
@@ -76,7 +76,7 @@ if not check_login():
 logout()
 
 # 原有应用代码从这里开始...
-st.title("⚡ 新能源项目全参数批量评价平台")
+st.title("风光储系统经济性评价平台")
 st.markdown("---")
 
 # --- 解析步長 ---
@@ -307,7 +307,7 @@ if st.button("🚀 开始批量方案计算"):
                     "资本金税后IRR": f"{m['C_post_irr_result']*100:.2f}%",
                     "项目税前IRR": f"{m.get('P_pre_irr_result', 0)*100:.2f}%",
                     "资本金税前IRR": f"{m.get('C_pre_irr_result', 0)*100:.2f}%",
-                    "广义LCOE(元/kWh)": f"{m['G_LCOE']:.4f}"
+                    "度电成本LCOE(元/kWh)": f"{m['LCOE']:.4f}"
                 })
             except Exception as e:
                 st.warning(f"方案 {i+1} 计算跳过: {e}")
@@ -318,20 +318,6 @@ if st.button("🚀 开始批量方案计算"):
         # --- 结果展示 ---
         st.subheader(f"方案计算完成 (共 {len(results)} 组)")
         df = pd.DataFrame(results)
-        
-        # 使用 metrics 展示最后一组计算的核心指标作为预览
-        st.markdown("#### 最近方案核心评价指标预览")
-        if results:
-            col1, col2, col3, col4, col5 = st.columns(5)
-            last = results[-1]
-            col1.metric("项目税后IRR", last["项目税后IRR"])
-            col2.metric("资本金税后IRR", last["资本金税后IRR"])
-            col3.metric("项目税前IRR", last["项目税前IRR"])
-            col4.metric("资本金税前IRR", last["资本金税前IRR"])
-            col5.metric("G_LCOE", last["广义LCOE(元/kWh)"])
-        else:
-            st.warning("没有成功计算任何方案，无法展示核心指标")
-
 
         st.markdown("#### 完整批量方案明细表")
         st.dataframe(df, use_container_width=True, hide_index=True)
