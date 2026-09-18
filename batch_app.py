@@ -1,4 +1,10 @@
 import streamlit as st
+
+# ===================== 兼容性补丁 (与 A-energy_app.py 一致) =====================
+# 解决 streamlit-cookies-manager 内部调用已弃用/移除的 st.cache 问题
+if not hasattr(st, "cache"):
+    st.cache = st.cache_data
+
 import pandas as pd
 import numpy as np
 import itertools
@@ -9,10 +15,11 @@ import project_parameters as pp  # 导入全局参数模块
 from financial_plan_cash_flow_model import get_financial_plan_cash_flow
 from streamlit_cookies_manager import EncryptedCookieManager
 
-# --- 用户数据库 ---
+# --- 用户数据库（与 A-energy_app.py 一致） ---
 USER_CREDENTIALS = {
     "msj01": "888888",
-    "cyt01": "888888"
+    "cyt01": "888888",
+    "user01": "000000"
 }
 
 # 设置页面配置
@@ -20,6 +27,7 @@ st.set_page_config(page_title="风光储系统经济性评价平台", layout="wi
 
 # --- Cookie 管理配置（与 A-energy_app.py 完全一致的 EncryptedCookieManager 方式） ---
 cookies = EncryptedCookieManager(
+    prefix="energy-app/",
     password=os.environ.get("COOKIES_PASSWORD", "a_very_secret_password_12345")
 )
 if not cookies.ready():
