@@ -2,16 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import itertools
+import io
 import os
+import datetime
 import project_parameters as pp  # 导入全局参数模块
 from financial_plan_cash_flow_model import get_financial_plan_cash_flow
-
-# --- 尝试导入Cookie管理库 ---
-try:
-    from streamlit_cookies_manager import EncryptedCookieManager
-except ImportError:
-    st.error("需要安装streamlit-cookies-manager库。请运行: pip install streamlit-cookies-manager")
-    st.stop()
+from streamlit_cookies_manager import EncryptedCookieManager
 
 # --- 用户数据库 ---
 USER_CREDENTIALS = {
@@ -22,27 +18,26 @@ USER_CREDENTIALS = {
 # 设置页面配置
 st.set_page_config(page_title="风光储系统经济性评价平台", layout="wide")
 
-# --- Cookie 管理配置 ---
+# --- Cookie 管理配置（与 A-energy_app.py 完全一致的 EncryptedCookieManager 方式） ---
 cookies = EncryptedCookieManager(
     password=os.environ.get("COOKIES_PASSWORD", "a_very_secret_password_12345")
 )
-
 if not cookies.ready():
     st.stop()
 
 def check_login():
-    """改进后的多用户验证逻辑"""
+    """多用户验证逻辑（基于浏览器 Cookie 保持登录态）"""
     # 1. 检查已有的 Cookie 状态
     if cookies.get("auth_status") == "logged_in":
         return True
 
     st.title("风光储系统经济性评价平台 - 身份验证")
-    
+
     with st.form("login_form"):
         user_input = st.text_input("账号")
         pw_input = st.text_input("密码", type="password")
         submit = st.form_submit_button("登录")
-        
+
         if submit:
             # 2. 检查账号是否存在且密码是否匹配
             if user_input in USER_CREDENTIALS and USER_CREDENTIALS[user_input] == pw_input:
@@ -86,15 +81,50 @@ def parse_range(input_str):
     """
     try:
         vals = [float(x.strip()) for x in input_str.split(",")]
-        if len(vals) == 1: 
+        if len(vals) == 1:
             return [vals[0]]
         start, end, step = vals
-        if step <= 0: 
+        if step <= 0:
             return [start]
         # 使用 np.arange 並處理浮點精度
         return np.round(np.arange(start, end + step/2, step), 4).tolist()
-    except:
+    except ValueError:
         return []
+
+@st.cache_data
+def load_table(file_bytes, filename):
+    """读取上传的参数表（缓存避免每次交互重复解析）"""
+    if filename.endswith('.xlsx'):
+        return pd.read_excel(io.BytesIO(file_bytes))
+    return pd.read_csv(io.BytesIO(file_bytes))
+
+# 表格上传模式需要的标准列名，以及可兼容的常见写法（自动做全角/半角括号与空格归一化）
+REQUIRED_TABLE_COLUMNS = {
+    '风电容量 (MW)': ['风电容量(MW)', '风电容量', '风电规模(MW)'],
+    '光伏容量 (MW)': ['光伏容量(MW)', '光伏容量', '光伏规模(MW)'],
+    '风电利用小时数 (h)': ['风电利用小时数(h)', '风电利用小时'],
+    '光伏利用小时数 (h)': ['光伏利用小时数(h)', '光伏利用小时'],
+    '储能容量 (MWh)': ['储能容量(MWh)', '储能容量', '储能规模(MWh)'],
+    '综合电价': ['综合上网电价', '电价'],
+}
+
+def match_table_columns(df):
+    """
+    将表格列名映射到标准列名；无法识别的返回缺失清单。
+    兼容：多余空格、全角括号（）、部分常见别名。
+    """
+    def norm(c):
+        return str(c).replace('（', '(').replace('）', ')').replace(' ', '').strip()
+
+    norm_to_actual = {norm(c): c for c in df.columns}
+    col_map = {}
+    for std_name, aliases in REQUIRED_TABLE_COLUMNS.items():
+        for cand in [std_name] + aliases:
+            if cand in norm_to_actual:
+                col_map[std_name] = norm_to_actual[cand]
+                break
+    missing = [k for k in REQUIRED_TABLE_COLUMNS if k not in col_map]
+    return col_map, missing
 
 # --- 侧边栏：参数输入模式切换 ---
 st.sidebar.header("📋 参数配置")
@@ -104,10 +134,7 @@ if input_mode == "表格上传":
     uploaded_file = st.sidebar.file_uploader("上传项目参数表 (Excel/CSV)", type=["xlsx", "csv"])
     if uploaded_file:
         try:
-            if uploaded_file.name.endswith('.xlsx'):
-                input_df = pd.read_excel(uploaded_file)
-            else:
-                input_df = pd.read_csv(uploaded_file)
+            input_df = load_table(uploaded_file.getvalue(), uploaded_file.name)
             st.sidebar.success(f"成功读取 {len(input_df)} 条方案数据")
         except Exception as e:
             st.sidebar.error(f"读取失败: {e}")
@@ -176,20 +203,27 @@ with st.sidebar.expander("5. 税率、折旧与残值 (固定值)"):
 # --- 计算逻辑 ---
 if st.button("🚀 开始批量方案计算"):
     scenarios = []
-    
+
     if input_mode == "表格上传":
         if input_df is not None:
-            # 根据你提供的图片列名进行映射
-            for _, row in input_df.iterrows():
-                scenarios.append({
-                    'wind_mw': row['风电容量 (MW)'],
-                    'pv_mw': row['光伏容量 (MW)'],
-                    'wind_hours': row['风电利用小时数 (h)'],
-                    'pv_hours': row['光伏利用小时数 (h)'],
-                    'storage_mwh': row['储能容量 (MWh)'], # 或 row['储能容量 (kWh)']/1000
-                    'w_price': row['综合电价'],
-                    'p_price': row['综合电价'],
-                })
+            col_map, missing = match_table_columns(input_df)
+            if missing:
+                st.error(
+                    f"表格缺少必需列: {missing}。"
+                    f"当前表格的列为: {list(input_df.columns)}，请修改表头后重新上传。"
+                )
+            else:
+                input_df = input_df.rename(columns={v: k for k, v in col_map.items()})
+                for _, row in input_df.iterrows():
+                    scenarios.append({
+                        'wind_mw': row['风电容量 (MW)'],
+                        'pv_mw': row['光伏容量 (MW)'],
+                        'wind_hours': row['风电利用小时数 (h)'],
+                        'pv_hours': row['光伏利用小时数 (h)'],
+                        'storage_mwh': row['储能容量 (MWh)'], # 或 row['储能容量 (kWh)']/1000
+                        'w_price': row['综合电价'],
+                        'p_price': row['综合电价'],
+                    })
         else:
             st.error("请先上传表格文件！")
     else:
@@ -201,101 +235,94 @@ if st.button("🚀 开始批量方案计算"):
         pp_list = parse_range(p_price_in)
         # 组合所有方案
         combinations = list(itertools.product(w_list, p_list, s_list, wp_list, pp_list))
-        
+
         if not combinations:
             st.error("无法解析参数组合，请检查输入格式（应为：起始, 终止, 步长）。")
         else:
-            results = []
-            progress_bar = st.progress(0)
-            num_combos = len(combinations)
-            for i, (wm, pm, sm, wp, pp_val) in enumerate(combinations):
-                scenarios.append({'wind_mw': wm, 'pv_mw': pm, 'storage_mwh': sm, 'wind_hours': w_h, 'pv_hours': p_h, 'w_price': wp,'p_price': pp_val})
+            for wm, pm, sm, wp, pp_val in combinations:
+                scenarios.append({'wind_mw': wm, 'pv_mw': pm, 'storage_mwh': sm, 'wind_hours': w_h, 'pv_hours': p_h, 'w_price': wp, 'p_price': pp_val})
 
     if scenarios:
+        # --- 同步侧边栏固定的静态参数（与具体方案无关，只需设置一次，移出循环以提升性能） ---
+        pp.INVESTMENT_PARAMS.update({
+            'wind_unit_investment_per_w': w_unit_inv,
+            'pv_unit_investment_per_wp': p_unit_inv,
+            'energy_storage_unit_investment_per_wh': s_unit_inv,
+            'other_non_fixed_asset_investment_million_yuan': other_inv,
+            'capital_ratio': cap_ratio,
+            'long_term_loan_rate': l_rate,
+            'short_term_loan_rate': s_rate,
+            'working_capital_per_kw': work_cap_kw,
+            'self_owned_working_capital_ratio': self_work_ratio,
+            'repayment_start_year': repay_start,
+            'repayment_period': repay_period
+        })
+
+        pp.REPAYMENT_METHOD.clear()
+        if repay_type == "等额本息":
+            pp.REPAYMENT_METHOD['equal_principal_and_interest'] = 1
+        else:
+            pp.REPAYMENT_METHOD['equal_principal'] = 1
+
+        pp.OPERATING_COST_PARAMS.update({
+            'wind_unit_operating_cost_per_w': w_op_cost,
+            'pv_unit_operating_cost_per_wp': p_op_cost,
+            'energy_storage_unit_operating_cost_per_wh': s_op_cost,
+            'equipment_replacement_year': replace_y1,
+            'equipment_replacement_S_year': replace_y2,
+            'equipment_replacement_unit_price_per_wh': replace_price
+        })
+
+        pp.POWER_GENERATION_PARAMS.update({
+            'first_year_decline': f_decline,
+            'annual_decline': a_decline
+        })
+
+        pp.TAX_RATES['vat_rate'] = vat
+        pp.TAX_RATES['standard_income_tax_rate'] = inc_std
+        pp.DEPRECIATION_RATES.update({
+            'wind_depreciation_rate': w_dep,
+            'pv_depreciation_rate': p_dep,
+            'energy_storage_depreciation_rate': s_dep
+        })
+        pp.SALVAGE_RATES.update({
+            'wind_salvage_rate': salvage,
+            'pv_salvage_rate': salvage,
+            'energy_storage_salvage_rate': salvage
+        })
+        pp.OPERATION_YEARS.update({'wind': op_y_w, 'pv': op_y_p})
+
         results = []
         progress_bar = st.progress(0)
         num_scenarios = len(scenarios)
-        
+
         for i, sc in enumerate(scenarios):
-            # --- 第一步：更新参数 (从表格或手动列表中提取) ---
+            # --- 更新每个方案的可变参数（规模、电价、利用小时数） ---
             pp.PROJECT_SCALE.update({
-                'wind_mw': sc['wind_mw'], 
-                'pv_mw': sc['pv_mw'], 
+                'wind_mw': sc['wind_mw'],
+                'pv_mw': sc['pv_mw'],
                 'energy_storage_mwh': sc['storage_mwh']
             })
             pp.SELLING_PRICE_PARAMS.update({
-                'wind_price_per_kwh': sc['w_price'], 
+                'wind_price_per_kwh': sc['w_price'],
                 'pv_price_per_kwh': sc['p_price']
             })
             pp.POWER_GENERATION_PARAMS.update({
-                'wind_hours': sc['wind_hours'], 
+                'wind_hours': sc['wind_hours'],
                 'pv_first_year_hours': sc['pv_hours']
             })
 
-            # --- 第二步：同步侧边栏固定的静态参数 (如利率、折旧等) ---
-            # 这部分保持原有代码不变，确保 global pp 被正确更新
-            pp.INVESTMENT_PARAMS.update({
-                'wind_unit_investment_per_w': w_unit_inv,
-                'pv_unit_investment_per_wp': p_unit_inv,
-                'energy_storage_unit_investment_per_wh': s_unit_inv,
-                'other_non_fixed_asset_investment_million_yuan': other_inv,
-                'capital_ratio': cap_ratio,
-                'long_term_loan_rate': l_rate,
-                'short_term_loan_rate': s_rate,
-                'working_capital_per_kw': work_cap_kw,
-                'self_owned_working_capital_ratio': self_work_ratio,
-                'repayment_start_year': repay_start,
-                'repayment_period': repay_period
-            })
-
-            pp.REPAYMENT_METHOD.clear()
-            if repay_type == "等额本息":
-                pp.REPAYMENT_METHOD['equal_principal_and_interest'] = 1
-            else:
-                pp.REPAYMENT_METHOD['equal_principal'] = 1
-
-            pp.OPERATING_COST_PARAMS.update({
-                'wind_unit_operating_cost_per_w': w_op_cost,
-                'pv_unit_operating_cost_per_wp': p_op_cost,
-                'energy_storage_unit_operating_cost_per_wh': s_op_cost,
-                'equipment_replacement_year': replace_y1,
-                'equipment_replacement_S_year': replace_y2,
-                'equipment_replacement_unit_price_per_wh': replace_price
-            })
-
-            pp.POWER_GENERATION_PARAMS.update({
-                'wind_hours': w_h, 
-                'pv_first_year_hours': p_h,
-                'first_year_decline': f_decline, 
-                'annual_decline': a_decline
-            })
-
-            pp.TAX_RATES['vat_rate'] = vat
-            pp.TAX_RATES['standard_income_tax_rate'] = inc_std
-            pp.DEPRECIATION_RATES.update({
-                'wind_depreciation_rate': w_dep,
-                'pv_depreciation_rate': p_dep,
-                'energy_storage_depreciation_rate': s_dep
-            })
-            pp.SALVAGE_RATES.update({
-                'wind_salvage_rate': salvage,
-                'pv_salvage_rate': salvage,
-                'energy_storage_salvage_rate': salvage
-            })
-            pp.OPERATION_YEARS.update({'wind': op_y_w, 'pv': op_y_p})
-
-            # 第二步：显式调用计算函数刷新派生参数
+            # --- 派生参数依赖各方案的规模/成本，必须在循环内逐方案重算 ---
             pp.INVESTMENT_RESULTS.clear()
             pp.INVESTMENT_RESULTS.update(pp._calculate_investments())
             pp.OPERATING_COST_RESULTS.clear()
             pp.OPERATING_COST_RESULTS.update(pp._calculate_operating_costs())
 
-            # 第三步：执行财务模型并提取结果
-
+            # --- 执行财务模型并提取结果 ---
             try:
                 data = get_financial_plan_cash_flow(total_years=26)
                 m = data['financing_cash_flow']
-                
+
                 results.append({
                     "序号": i + 1,
                     "风电规模(MW)": sc['wind_mw'],
@@ -311,7 +338,7 @@ if st.button("🚀 开始批量方案计算"):
                 })
             except Exception as e:
                 st.warning(f"方案 {i+1} 计算跳过: {e}")
-            
+
             progress_bar.progress((i + 1) / num_scenarios)
 
 
@@ -321,10 +348,10 @@ if st.button("🚀 开始批量方案计算"):
 
         st.markdown("#### 完整批量方案明细表")
         st.dataframe(df, use_container_width=True, hide_index=True)
-        
+
         # 导出 CSV
         csv = df.to_csv(index=False).encode('utf-8-sig')
         st.download_button("导出全量结果明细表", csv, "batch_valuation_results.csv", "text/csv")
-    
+
 else:
     st.info("请在左侧配置批量参数（支持起始, 终止, 步长）和固定参数，点击按钮开始仿真。")
