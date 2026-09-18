@@ -1,6 +1,6 @@
 import streamlit as st
 
-# ===================== 兼容性补丁 (与 A-energy_app.py 一致) =====================
+# ===================== 兼容性补丁  =====================
 # 解决 streamlit-cookies-manager 内部调用已弃用/移除的 st.cache 问题
 if not hasattr(st, "cache"):
     st.cache = st.cache_data
