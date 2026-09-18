@@ -15,7 +15,7 @@ import project_parameters as pp  # 导入全局参数模块
 from financial_plan_cash_flow_model import get_financial_plan_cash_flow
 from streamlit_cookies_manager import EncryptedCookieManager
 
-# --- 用户数据库（与 A-energy_app.py 一致） ---
+# --- 用户数据库 ---
 USER_CREDENTIALS = {
     "msj01": "888888",
     "cyt01": "888888",
@@ -25,7 +25,7 @@ USER_CREDENTIALS = {
 # 设置页面配置
 st.set_page_config(page_title="风光储系统经济性评价平台", layout="wide")
 
-# --- Cookie 管理配置（与 A-energy_app.py 完全一致的 EncryptedCookieManager 方式） ---
+# --- Cookie 管理配置 ---
 cookies = EncryptedCookieManager(
     prefix="energy-app/",
     password=os.environ.get("COOKIES_PASSWORD", "a_very_secret_password_12345")
@@ -78,7 +78,6 @@ if not check_login():
 # 在主应用标题前先显示登出功能（侧边栏顶部）
 logout()
 
-# 原有应用代码从这里开始...
 st.title("风光储系统经济性评价平台")
 st.markdown("---")
 
