@@ -533,34 +533,39 @@ def get_financial_plan_cash_flow(total_years=26):
         cash_flow_statement['operating_cash_flow']['loss_carry_forward_next_year'].append(loss_carry_forward)
 
     ###计算项目税前税后IRR\NPV\回收期
+    def _first_payback_idx(cumulative_list):
+        """累计现金流首次转正的年份下标；经营期内始终未转正时返回 None（回收期=未回收）"""
+        idx_arr = np.where(np.array(cumulative_list) > 0)[0]
+        return int(idx_arr[0]) if len(idx_arr) else None
+
     #税后
     P_post_irr_result = npf.irr(cash_flow_statement['final_project_metrics']['project_post_tax_net_cash_flow']) # C154
     P_post_npv_result = npf.npv(INVESTMENT_PARAMS['benchmark_yield'],[0] + cash_flow_statement['final_project_metrics']['project_post_tax_net_cash_flow']) #C155
-    P_post_basic_period = np.where(np.array(cash_flow_statement['final_project_metrics']['project_cumulative_net_cash_flow']) > 0)[0][0]
+    P_post_basic_period = _first_payback_idx(cash_flow_statement['final_project_metrics']['project_cumulative_net_cash_flow'])
     P_post_payback_period = P_post_basic_period + abs(np.array(cash_flow_statement['final_project_metrics']['project_cumulative_net_cash_flow'])[P_post_basic_period-1])/ \
-                            np.array(cash_flow_statement['final_project_metrics']['project_post_tax_net_cash_flow'])[P_post_basic_period] #C157
+                            np.array(cash_flow_statement['final_project_metrics']['project_post_tax_net_cash_flow'])[P_post_basic_period] if P_post_basic_period is not None else None #C157
 
     #税前
     P_pre_irr_result = npf.irr(cash_flow_statement['final_project_metrics']['project_pre_tax_net_cash_flow'])
     P_pre_npv_result = npf.npv(INVESTMENT_PARAMS['benchmark_yield'],[0] + cash_flow_statement['final_project_metrics']['project_pre_tax_net_cash_flow'])
-    P_pre_basic_period = np.where(np.array(cash_flow_statement['final_project_metrics']['project_pre_tax_cumulative_net_cash_flow']) > 0)[0][0]
+    P_pre_basic_period = _first_payback_idx(cash_flow_statement['final_project_metrics']['project_pre_tax_cumulative_net_cash_flow'])
     P_pre_payback_period = P_pre_basic_period + abs(np.array(cash_flow_statement['final_project_metrics']['project_pre_tax_cumulative_net_cash_flow'])[P_pre_basic_period-1])/ \
-                           np.array(cash_flow_statement['final_project_metrics']['project_pre_tax_net_cash_flow'])[P_pre_basic_period]
+                           np.array(cash_flow_statement['final_project_metrics']['project_pre_tax_net_cash_flow'])[P_pre_basic_period] if P_pre_basic_period is not None else None
 
     ###计算资本金税前税后IRR\NPV\回收期
     #税后
     C_post_irr_result = npf.irr(cash_flow_statement['final_project_metrics']['capital_net_cash_flow'])
     C_post_npv_result = npf.npv(INVESTMENT_PARAMS['benchmark_yield'],[0] + cash_flow_statement['final_project_metrics']['capital_net_cash_flow'])
-    C_post_basic_period = np.where(np.array(cash_flow_statement['final_project_metrics']['capital_cumulative_net_cash_flow']) > 0)[0][0]
+    C_post_basic_period = _first_payback_idx(cash_flow_statement['final_project_metrics']['capital_cumulative_net_cash_flow'])
     C_post_payback_period = C_post_basic_period + abs(np.array(cash_flow_statement['final_project_metrics']['capital_cumulative_net_cash_flow'])[C_post_basic_period-1])/ \
-                            np.array(cash_flow_statement['final_project_metrics']['capital_net_cash_flow'])[C_post_basic_period]
+                            np.array(cash_flow_statement['final_project_metrics']['capital_net_cash_flow'])[C_post_basic_period] if C_post_basic_period is not None else None
 
     #税前
     C_pre_irr_result = npf.irr(cash_flow_statement['final_project_metrics']['capital_pre_tax_net_cash_flow'])
     C_pre_npv_result = npf.npv(INVESTMENT_PARAMS['benchmark_yield'],[0] + cash_flow_statement['final_project_metrics']['capital_pre_tax_net_cash_flow'])
-    C_pre_basic_period = np.where(np.array(cash_flow_statement['final_project_metrics']['capital_pre_tax_cumulative_net_cash_flow']) > 0)[0][0]
+    C_pre_basic_period = _first_payback_idx(cash_flow_statement['final_project_metrics']['capital_pre_tax_cumulative_net_cash_flow'])
     C_pre_payback_period = C_pre_basic_period + abs(np.array(cash_flow_statement['final_project_metrics']['capital_pre_tax_cumulative_net_cash_flow'])[C_pre_basic_period-1])/ \
-                             np.array(cash_flow_statement['final_project_metrics']['capital_pre_tax_net_cash_flow'])[C_pre_basic_period]
+                             np.array(cash_flow_statement['final_project_metrics']['capital_pre_tax_net_cash_flow'])[C_pre_basic_period] if C_pre_basic_period is not None else None
 
     ###计算资本金度电成本（最终输出）
     
