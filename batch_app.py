@@ -19,6 +19,7 @@ from streamlit_cookies_manager import EncryptedCookieManager
 USER_CREDENTIALS = {
     "msj01": "888888",
     "cyt01": "888888",
+    "mht01": "888888",
     "user01": "000000"
 }
 
