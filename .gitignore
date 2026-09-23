@@ -1,0 +1,5 @@
+# 敏感配置（账号密码等），切勿提交到仓库
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
