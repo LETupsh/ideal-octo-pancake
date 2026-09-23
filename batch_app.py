@@ -9,27 +9,35 @@ import pandas as pd
 import numpy as np
 import itertools
 import io
-import os
 import datetime
 import project_parameters as pp  # 导入全局参数模块
 from financial_plan_cash_flow_model import get_financial_plan_cash_flow
 from streamlit_cookies_manager import EncryptedCookieManager
 
-# --- 用户数据库 ---
-USER_CREDENTIALS = {
-    "msj01": "888888",
-    "cyt01": "888888",
-    "mht01": "888888",
-    "user01": "000000"
-}
+# --- 用户数据库（已迁移到 Streamlit secrets，请勿在代码中硬编码密码）---
+# 配置方法见 .streamlit/secrets.toml.example（本地）
+# 或 Streamlit Cloud -> App -> Settings -> Secrets（线上）
+try:
+    USER_CREDENTIALS = dict(st.secrets["users"])
+except Exception:
+    # secrets 未配置 [users] 段时安全兜底：所有账号都无法登录（fail-closed）
+    USER_CREDENTIALS = {}
 
 # 设置页面配置
 st.set_page_config(page_title="风光储系统经济性评价平台", layout="wide")
 
 # --- Cookie 管理配置 ---
+try:
+    _cookie_password = st.secrets["cookie_password"]
+except Exception as e:
+    raise RuntimeError(
+        "缺少登录配置：请在 .streamlit/secrets.toml（参考 .streamlit/secrets.toml.example）"
+        "或 Streamlit Cloud 的 App -> Settings -> Secrets 中配置 cookie_password 和 [users]"
+    ) from e
+
 cookies = EncryptedCookieManager(
     prefix="energy-app/",
-    password=os.environ.get("COOKIES_PASSWORD", "a_very_secret_password_12345")
+    password=_cookie_password
 )
 if not cookies.ready():
     st.stop()
