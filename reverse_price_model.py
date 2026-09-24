@@ -47,7 +47,7 @@ def _irr_at_price(price, irr_key, total_years):
     return irr, data
 
 
-def solve_comprehensive_price(target_irr, irr_type='project_post', total_years=26,
+def solve_comprehensive_price(target_irr, irr_type='project_post', total_years=None,
                               tol=1e-8, max_iter=100):
     """
     反推使目标 IRR 达标所需的综合电价。
@@ -56,7 +56,7 @@ def solve_comprehensive_price(target_irr, irr_type='project_post', total_years=2
         target_irr (float): 目标 IRR（小数形式，如 0.08 表示 8%）。
         irr_type (str): 'project_post' 项目税后IRR / 'project_pre' 项目税前IRR /
                         'capital_post' 资本金税后IRR / 'capital_pre' 资本金税前IRR。
-        total_years (int): 计算总年数（与批量计算保持一致，默认 26）。
+        total_years (int): 计算总年数；None 时按项目寿命（max运营年限+1）动态计算。
         tol (float): 电价求解精度（元/kWh）。
         max_iter (int): 二分法最大迭代次数。
 

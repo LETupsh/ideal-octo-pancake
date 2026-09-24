@@ -57,6 +57,11 @@ OPERATION_YEARS = {
     'energy_storage': 20,
 }
 
+def get_project_total_years():
+    """项目计算期（年）= max(各资产运营年限) + 1 年建设期，随运营年限参数动态变化。"""
+    return max(OPERATION_YEARS.values()) + 1
+
+
 # C46:C48 - 售电电价：收入计算的核心基准
 SELLING_PRICE_PARAMS = {
     'wind_price_per_kwh': 0.33,       # 风电含税上网电价 (元/kWh)

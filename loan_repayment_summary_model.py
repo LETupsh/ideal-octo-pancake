@@ -8,7 +8,8 @@ from project_parameters import (
     INVESTMENT_RESULTS,
     TAX_RATES,
     REPAYMENT_METHOD,
-    OPERATION_YEARS
+    OPERATION_YEARS,
+    get_project_total_years
 )
 import math
 # 从其他模型导入必要的函数
@@ -34,7 +35,7 @@ def pmt(rate, nper, pv):
 
     return rate * pv / (1 - (1 + rate)**-nper)
 
-def calculate_loan_repayment_plan():
+def calculate_loan_repayment_plan(total_years=None):
     """
     [来自 loan_model.py]
     计算长期贷款在建设期和运营期内的还本付息计划。
@@ -72,8 +73,8 @@ def calculate_loan_repayment_plan():
     # 初始化年末贷款余额（正数表示欠款），对应 Excel 中的 C241
     end_of_year_balance = 0
 
-    # 假设运营年限为25年，加上1年建设期
-    total_project_years = OPERATION_YEARS['pv'] + 1
+    # 项目计算期动态化：max(各资产运营年限) + 1 年建设期；可由调用方显式传入
+    total_project_years = total_years if total_years is not None else get_project_total_years()
 
     # 预先计算建设期末的贷款余额，作为还款期现值
     construction_period_interest = (total_loan_amount / 2) * long_term_loan_rate
@@ -147,7 +148,7 @@ def calculate_loan_repayment_plan():
     
     return repayment_plan
 
-def calculate_loan_repayment_summary(total_years=26):
+def calculate_loan_repayment_summary(total_years=None):
     """
     [来自 loan_repayment_summary_model.py]
     计算并返回每年的长期借款还本付息汇总表数据。
@@ -171,7 +172,7 @@ def calculate_loan_repayment_summary(total_years=26):
               - funds_for_repayment: (留空待计算)
     """
     # 获取所需的外部数据，直接调用合并后的文件内的函数
-    loan_repayment_plan = calculate_loan_repayment_plan()
+    loan_repayment_plan = calculate_loan_repayment_plan(total_years)
     annual_cost_data = get_annual_cost_statement(total_years)
     annual_profit_data = calculate_annual_profit_statement(total_years)
 

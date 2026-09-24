@@ -361,7 +361,7 @@ if calc_mode == "⚡ 正向计算（电价 → IRR）":
 
                 # --- 执行财务模型并提取结果 ---
                 try:
-                    data = get_financial_plan_cash_flow(total_years=26)
+                    data = get_financial_plan_cash_flow()
                     m = data['financing_cash_flow']
 
                     results.append({
@@ -474,7 +474,7 @@ if calc_mode == "🎯 反推电价（目标IRR → 综合电价）":
             for i, sc in enumerate(scenarios):
                 apply_scenario_params(sc)
                 try:
-                    sol = solve_comprehensive_price(target_irr, irr_type=irr_type_key, total_years=26)
+                    sol = solve_comprehensive_price(target_irr, irr_type=irr_type_key)
                     if sol['converged']:
                         results.append({
                             "序号": i + 1,

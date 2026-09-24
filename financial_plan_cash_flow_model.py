@@ -4,7 +4,8 @@ from project_parameters import (
     INVESTMENT_RESULTS,
     PROJECT_SCALE,
     OPERATION_YEARS,
-    SELLING_PRICE_PARAMS
+    SELLING_PRICE_PARAMS,
+    get_project_total_years
 )
 from revenue_model import calculate_annual_profit_statement
 from cost_model import get_annual_cost_statement
@@ -14,7 +15,7 @@ from capital_cash_flow_model import calculate_capital_cash_inflow,calculate_capi
 import numpy as np
 import numpy_financial as npf
 
-def get_financial_plan_cash_flow(total_years=26):
+def get_financial_plan_cash_flow(total_years=None):
     """
     计算并返回财务计划现金流量表的各年度分项数据。
     本文件已包含短期贷款的计算逻辑。
@@ -25,6 +26,9 @@ def get_financial_plan_cash_flow(total_years=26):
     Returns:
         dict: 包含各年度现金流量分项数据的字典。
     """
+    if total_years is None:
+        total_years = get_project_total_years()
+
     # 获取所有需要的外部数据
     annual_profit_data = calculate_annual_profit_statement(total_years)
     annual_cost_data = get_annual_cost_statement(total_years)

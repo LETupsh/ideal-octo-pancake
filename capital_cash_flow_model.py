@@ -1,12 +1,13 @@
 # 导入所需的参数和数据
 from project_parameters import (
     INVESTMENT_PARAMS,
-    INVESTMENT_RESULTS
+    INVESTMENT_RESULTS,
+    get_project_total_years
 )
 from cash_flow_model import calculate_annual_cash_inflow, calculate_annual_cash_outflow
 from loan_repayment_summary_model import calculate_loan_repayment_plan
 
-def calculate_capital_cash_inflow(total_years=26):
+def calculate_capital_cash_inflow(total_years=None):
     """
     计算并返回每年的资本金财务现金流入。
 
@@ -16,6 +17,9 @@ def calculate_capital_cash_inflow(total_years=26):
     Returns:
         dict: 包含各年度现金流入分项数据的字典。
     """
+    if total_years is None:
+        total_years = get_project_total_years()
+
     # 引用项目财务现金流量表中的数据
     project_cash_flow_in = calculate_annual_cash_inflow(total_years)
 
@@ -46,7 +50,7 @@ def calculate_capital_cash_inflow(total_years=26):
     
     return capital_inflow
 
-def calculate_capital_cash_outflow(total_years=26):
+def calculate_capital_cash_outflow(total_years=None):
     """
     计算并返回每年的资本金财务现金流出。
 
@@ -56,9 +60,12 @@ def calculate_capital_cash_outflow(total_years=26):
     Returns:
         dict: 包含各年度现金流出分项数据的字典。
     """
+    if total_years is None:
+        total_years = get_project_total_years()
+
     # 获取所需的外部数据
     project_cash_flow_out = calculate_annual_cash_outflow(total_years)
-    loan_repayment_plan = calculate_loan_repayment_plan()
+    loan_repayment_plan = calculate_loan_repayment_plan(total_years)
     
     # 初始化资本金现金流出数据结构
     capital_outflow = {
