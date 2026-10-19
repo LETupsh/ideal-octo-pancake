@@ -72,6 +72,10 @@ def solve_comprehensive_price(target_irr, irr_type='project_post', total_years=N
             C_post_irr_result (float): 求解电价下的资本金税后IRR。
             C_pre_irr_result (float): 求解电价下的资本金税前IRR。
             LCOE (float): 求解电价下的度电成本。
+            G_LCOE (float): 求解电价下的广义度电成本。
+            final_metrics (dict): 求解电价下的完整财务指标（含 NPV、回收期等）。
+            annual_profit_data (dict): 首年及逐年的收入/电量数据。
+            investment_results (dict): 当前方案的投资拆解结果。
             message (str): 未收敛时的原因说明。
     """
     if irr_type not in IRR_KEYS:
@@ -89,6 +93,11 @@ def solve_comprehensive_price(target_irr, irr_type='project_post', total_years=N
         'C_post_irr_result': None,
         'C_pre_irr_result': None,
         'LCOE': None,
+        'G_LCOE': None,
+        # 供批量明细表/导出使用的完整结果
+        'final_metrics': None,
+        'annual_profit_data': None,
+        'investment_results': None,
         'message': '',
     }
 
@@ -146,6 +155,10 @@ def solve_comprehensive_price(target_irr, irr_type='project_post', total_years=N
             'C_post_irr_result': m.get('C_post_irr_result'),
             'C_pre_irr_result': m.get('C_pre_irr_result'),
             'LCOE': m.get('LCOE'),
+            'G_LCOE': m.get('G_LCOE'),
+            'final_metrics': m,
+            'annual_profit_data': (data.get('external_data') or {}).get('annual_profit_data'),
+            'investment_results': dict(pp.INVESTMENT_RESULTS),
         })
         return result
     finally:

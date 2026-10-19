@@ -128,8 +128,8 @@ def _fmt_hour_list(vals, max_show=8):
         shown += f" …（共 {len(vals)} 个）"
     return shown
 
-def _actual_hours(equiv_list, curtailment):
-    """实际小时数 = 等效小时数 × (1 − 限电率)。
+def _calc_hours(equiv_list, curtailment):
+    """测算小时数 = 等效小时数 × (1 − 限电率)。
     curtailment 可为单个限电率（小数）或限电率列表；多个时返回去重排序后的组合结果。
     """
     rates = curtailment if isinstance(curtailment, (list, tuple)) else [curtailment]
@@ -143,6 +143,159 @@ def _actual_hours(equiv_list, curtailment):
 def _pct_to_fraction(vals):
     """把百分数列表（0~100）转换为小数列表（0~1），并做上下限保护。"""
     return [min(max(_to_float(v, 0.0) or 0.0, 0.0), 100.0) / 100.0 for v in vals]
+
+def _safe_float(value, default=None):
+    """安全转 float：None/空值/非数字/nan/inf 时返回默认值。"""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    if math.isnan(f) or math.isinf(f):
+        return default
+    return f
+
+def _round_num(value, digits=2, default=None):
+    """四舍五入到指定小数位；无效值返回默认值。"""
+    v = _safe_float(value)
+    return default if v is None else round(v, digits)
+
+def _pct_num(value, digits=2, default=None):
+    """小数转百分数（0.0838 -> 8.38）；无效值返回默认值。"""
+    v = _safe_float(value)
+    return default if v is None else round(v * 100, digits)
+
+def build_scenario_columns(sc):
+    """明细表列：每个方案会变动的输入参数。"""
+    return {
+        "风电装机规模(MW)": _round_num(sc.get('wind_mw')),
+        "光伏装机规模(MW)": _round_num(sc.get('pv_mw')),
+        "储能配置容量(MWh)": _round_num(sc.get('storage_mwh')),
+        "总装机规模(MW)": _round_num(
+            (_safe_float(sc.get('wind_mw'), 0.0) or 0.0) +
+            (_safe_float(sc.get('pv_mw'), 0.0) or 0.0)
+        ),
+        "风电等效小时数(h)": _round_num(sc.get('wind_equiv_hours')),
+        "光伏等效小时数(h)": _round_num(sc.get('pv_equiv_hours')),
+        "风电限电率(%)": _pct_num(sc.get('w_curtail')),
+        "光伏限电率(%)": _pct_num(sc.get('p_curtail')),
+        "风电测算小时数(h)": _round_num(sc.get('wind_hours')),
+        "光伏测算小时数(h)": _round_num(sc.get('pv_hours')),
+    }
+
+def build_investment_columns(inv=None):
+    """明细表列：方案对应的投资拆解（万元）。"""
+    inv = pp.INVESTMENT_RESULTS if inv is None else inv
+    return {
+        "风电投资(万元)": _round_num(inv.get('wind_farm_investment')),
+        "光伏投资(万元)": _round_num(inv.get('pv_power_plant_investment')),
+        "储能投资(万元)": _round_num(inv.get('energy_storage_investment')),
+        "静态总投资(万元)": _round_num(inv.get('total_project_investment')),
+        "建设期利息(万元)": _round_num(inv.get('construction_period_interest')),
+        "动态总投资(万元)": _round_num(inv.get('dynamic_total_investment')),
+        "长期贷款本金(万元)": _round_num(inv.get('loan_amount')),
+        "流动资金(万元)": _round_num(inv.get('working_capital')),
+    }
+
+def build_generation_columns(annual_profit_data=None):
+    """明细表列：首年（投产年）发电量与销售收入。"""
+    ap = annual_profit_data or {}
+
+    def _at(key, idx, digits=2):
+        seq = ap.get(key) or []
+        return _round_num(seq[idx], digits) if len(seq) > idx else None
+
+    return {
+        "首年上网电量(亿kWh)": _at('total_sale_electricity_billion_kwh', 1, 4),
+        "首年含税销售收入(万元)": _at('sales_revenue_with_vat', 1),
+        "首年不含税销售收入(万元)": _at('sales_revenue_without_vat', 1),
+    }
+
+def build_financial_columns(metrics):
+    """明细表列：财务评价指标（IRR 以百分数数值表示）。"""
+    m = metrics or {}
+    return {
+        "项目税后IRR(%)": _pct_num(m.get('P_post_irr_result')),
+        "项目税前IRR(%)": _pct_num(m.get('P_pre_irr_result')),
+        "资本金税后IRR(%)": _pct_num(m.get('C_post_irr_result')),
+        "资本金税前IRR(%)": _pct_num(m.get('C_pre_irr_result')),
+        "项目税后NPV(万元)": _round_num(m.get('P_post_npv_result')),
+        "项目税前NPV(万元)": _round_num(m.get('P_pre_npv_result')),
+        "资本金税后NPV(万元)": _round_num(m.get('C_post_npv_result')),
+        "资本金税前NPV(万元)": _round_num(m.get('C_pre_npv_result')),
+        "项目税后回收期(年)": _round_num(m.get('P_post_payback_period')),
+        "项目税前回收期(年)": _round_num(m.get('P_pre_payback_period')),
+        "资本金税后回收期(年)": _round_num(m.get('C_post_payback_period')),
+        "资本金税前回收期(年)": _round_num(m.get('C_pre_payback_period')),
+        "度电成本LCOE(元/kWh)": _round_num(m.get('LCOE'), 4),
+        "广义度电成本G_LCOE(元/kWh)": _round_num(m.get('G_LCOE'), 4),
+    }
+
+def _fmt_pct_display(value, digits=2):
+    """百分比数值（如 8.38）→ 展示文本（如 "8.38%"）；无法显示时返回 "—"。"""
+    v = _safe_float(value)
+    return "—" if v is None else f"{v:.{digits}f}%"
+
+def _fmt_rate_display(value):
+    """限电率展示：10 → "10%"，7.5 → "7.5%"。"""
+    v = _safe_float(value)
+    return "—" if v is None else f"{v:g}%"
+
+def build_display_table(df, mode="forward"):
+    """页面展示用的精简结果表；导出仍使用全量 df。"""
+    if mode == "forward":
+        col_map = {
+            "序号": "序号",
+            "风电装机规模(MW)": "风电规模(MW)",
+            "光伏装机规模(MW)": "光伏规模(MW)",
+            "储能配置容量(MWh)": "储能规模(MWh)",
+            "风电测算小时数(h)": "风电测算小时数(h)",
+            "光伏测算小时数(h)": "光伏测算小时数(h)",
+            "风电含税电价(元/kWh)": "风电电价(元/kWh)",
+            "光伏含税电价(元/kWh)": "光伏电价(元/kWh)",
+            "项目税后IRR(%)": "项目税后IRR",
+            "资本金税后IRR(%)": "资本金税后IRR",
+            "项目税前IRR(%)": "项目税前IRR",
+            "资本金税前IRR(%)": "资本金税前IRR",
+            "度电成本LCOE(元/kWh)": "度电成本LCOE(元/kWh)",
+        }
+    else:
+        col_map = {
+            "序号": "序号",
+            "风电装机规模(MW)": "风电规模(MW)",
+            "光伏装机规模(MW)": "光伏规模(MW)",
+            "储能配置容量(MWh)": "储能规模(MWh)",
+            "风电测算小时数(h)": "风电测算小时数(h)",
+            "光伏测算小时数(h)": "光伏测算小时数(h)",
+            "目标IRR类型": "目标IRR类型",
+            "目标IRR(%)": "目标IRR",
+            "反推综合电价(元/kWh)": "反推综合电价(元/kWh)",
+            "项目税后IRR(%)": "项目税后IRR",
+            "资本金税后IRR(%)": "资本金税后IRR",
+            "项目税前IRR(%)": "项目税前IRR",
+            "资本金税前IRR(%)": "资本金税前IRR",
+            "度电成本LCOE(元/kWh)": "度电成本LCOE(元/kWh)",
+            "备注": "备注",
+        }
+
+    out = df[list(col_map)].rename(columns=col_map).copy()
+
+    # 限电率拆成风电、光伏两列，百分号直接显示在单元格里
+    insert_at = out.columns.get_loc("光伏测算小时数(h)") + 1
+    out.insert(insert_at, "风电限电率", df["风电限电率(%)"].map(_fmt_rate_display))
+    out.insert(insert_at + 1, "光伏限电率", df["光伏限电率(%)"].map(_fmt_rate_display))
+
+    # IRR 直接显示为带百分号的文本
+    for c in out.columns:
+        if "IRR" in c:
+            out[c] = out[c].map(_fmt_pct_display)
+    return out
+
+def dataframe_to_excel_bytes(df, sheet_name="明细"):
+    """把 DataFrame 转成 xlsx 字节流，用于下载。"""
+    bio = io.BytesIO()
+    with pd.ExcelWriter(bio, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+    return bio.getvalue()
 
 @st.cache_data
 def load_table(file_bytes, filename):
@@ -232,7 +385,7 @@ def build_template_bytes():
         ['风电限电率 (%)', '可选', '百分数（5 表示 5%），取值范围 0~100；缺省按 0 处理。'],
         ['光伏限电率 (%)', '可选', '百分数（3 表示 3%），取值范围 0~100；缺省按 0 处理。'],
         ['综合电价', '正算必填', '含税综合上网电价，单位 元/kWh；反推模式下无需该列。'],
-        ['实际小时数', '自动派生', '实际小时数 = 等效小时数 × (1 − 限电率)，由程序自动计算，无需填写。'],
+        ['测算小时数', '自动派生', '测算小时数 = 等效小时数 × (1 − 限电率)，由程序自动计算，无需填写。'],
         ['格式说明', '—', '支持 .xlsx / .csv；第 1 行须为表头，列名建议与模板保持一致（程序会自动忽略全/半角括号与空格差异）。'],
     ], columns=['列名', '是否必填', '说明'])
 
@@ -256,6 +409,8 @@ if input_mode == "表格上传":
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
         help="下载标准模板，按“参数模板”工作表填写后上传；限电率等列请勿改名。",
+        key="template_download_excel",
+        on_click="ignore",  # 下载时不触发页面重跑
     )
     if uploaded_file:
         try:
@@ -279,14 +434,14 @@ else:
         # 限电率：支持“起始, 终止, 步长”批量遍历（百分数，5 表示 5%）
         w_curt_in = st.text_input("风电限电率 (%)", "0", help="支持批量：如 0, 20, 5 表示 0%、5%、…、20%。")
         p_curt_in = st.text_input("光伏限电率 (%)", "0", help="支持批量：如 0, 20, 5 表示 0%、5%、…、20%。")
-        # 实际小时数 = 等效小时数 × (1 − 限电率)，实时预览
+        # 测算小时数 = 等效小时数 × (1 − 限电率)，实时预览
         _w_equiv_preview = parse_range(w_hours_in)
         _p_equiv_preview = parse_range(p_hours_in)
         _w_curt_preview = _pct_to_fraction(parse_range(w_curt_in))
         _p_curt_preview = _pct_to_fraction(parse_range(p_curt_in))
-        st.caption("**实际小时数 = 等效小时数 × (1 − 限电率)**")
-        st.caption(f"风电实际小时数：{_fmt_hour_list(_actual_hours(_w_equiv_preview, _w_curt_preview))}")
-        st.caption(f"光伏实际小时数：{_fmt_hour_list(_actual_hours(_p_equiv_preview, _p_curt_preview))}")
+        st.caption("**测算小时数 = 等效小时数 × (1 − 限电率)**")
+        st.caption(f"风电测算小时数：{_fmt_hour_list(_calc_hours(_w_equiv_preview, _w_curt_preview))}")
+        st.caption(f"光伏测算小时数：{_fmt_hour_list(_calc_hours(_p_equiv_preview, _p_curt_preview))}")
 
 
 # 2. 投资与资金参数 (固定值)
@@ -446,7 +601,7 @@ if calc_mode == "⚡ 正向计算（电价 → IRR）":
                             'pv_equiv_hours': p_equiv,
                             'w_curtail': w_cur,
                             'p_curtail': p_cur,
-                            # 模型按“实际小时数 = 等效小时数 × (1 − 限电率)”计算发电量
+                            # 模型按“测算小时数 = 等效小时数 × (1 − 限电率)”计算发电量
                             'wind_hours': w_equiv * (1 - w_cur),
                             'pv_hours': p_equiv * (1 - p_cur),
                             'w_price': row['综合电价'],
@@ -476,7 +631,7 @@ if calc_mode == "⚡ 正向计算（电价 → IRR）":
                         'wind_mw': wm, 'pv_mw': pm, 'storage_mwh': sm,
                         'wind_equiv_hours': wh, 'pv_equiv_hours': ph,
                         'w_curtail': wc, 'p_curtail': pc,
-                        # 模型按“实际小时数 = 等效小时数 × (1 − 限电率)”计算发电量
+                        # 模型按“测算小时数 = 等效小时数 × (1 − 限电率)”计算发电量
                         'wind_hours': wh * (1 - wc),
                         'pv_hours': ph * (1 - pc),
                         'w_price': wp, 'p_price': pp_val,
@@ -503,39 +658,57 @@ if calc_mode == "⚡ 正向计算（电价 → IRR）":
                     data = get_financial_plan_cash_flow()
                     m = data['financing_cash_flow']
 
-                    results.append({
-                        "序号": i + 1,
-                        "风电规模(MW)": sc['wind_mw'],
-                        "光伏规模(MW)": sc['pv_mw'],
-                        "储能规模(MWh)": sc['storage_mwh'],
-                        "风电实际小时数(h)": round(sc.get('wind_hours', 0.0), 2),
-                        "光伏实际小时数(h)": round(sc.get('pv_hours', 0.0), 2),
-                        "风电电价": sc['w_price'],
-                        "光伏电价": sc['p_price'],
-                        "项目税后IRR": f"{m['P_post_irr_result']*100:.2f}%",
-                        "资本金税后IRR": f"{m['C_post_irr_result']*100:.2f}%",
-                        "项目税前IRR": f"{m.get('P_pre_irr_result', 0)*100:.2f}%",
-                        "资本金税前IRR": f"{m.get('C_pre_irr_result', 0)*100:.2f}%",
-                        "度电成本LCOE(元/kWh)": f"{m['LCOE']:.4f}"
-                    })
+                    row = {"序号": i + 1}
+                    row.update(build_scenario_columns(sc))
+                    row["风电含税电价(元/kWh)"] = _round_num(sc.get('w_price'), 4)
+                    row["光伏含税电价(元/kWh)"] = _round_num(sc.get('p_price'), 4)
+                    row.update(build_investment_columns())
+                    row.update(build_generation_columns(
+                        (data.get('external_data') or {}).get('annual_profit_data')))
+                    row.update(build_financial_columns(m))
+                    results.append(row)
                 except Exception as e:
                     st.warning(f"方案 {i+1} 计算跳过: {e}")
 
                 progress_bar.progress((i + 1) / num_scenarios)
 
 
-            # --- 结果展示 ---
-            st.subheader(f"方案计算完成 (共 {len(results)} 组)")
-            df = pd.DataFrame(results)
-
-            st.markdown("#### 完整批量方案明细表")
-            st.dataframe(df, use_container_width=True, hide_index=True)
-
-            # 导出 CSV
-            csv = df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("导出全量结果明细表", csv, "batch_valuation_results.csv", "text/csv")
+            df_result = pd.DataFrame(results)
+            if df_result.empty:
+                st.session_state.pop("forward_results", None)
+                st.session_state.pop("forward_excel", None)
+                st.error("本次计算未产生有效结果，请检查参数或查看上方提示。")
+            else:
+                # 结果存入 session_state：页面重跑、点击下载后仍保留，不会回退
+                st.session_state["forward_results"] = df_result
+                st.session_state["forward_excel"] = dataframe_to_excel_bytes(df_result, "正向批量明细")
         else:
+            st.session_state.pop("forward_results", None)
+            st.session_state.pop("forward_excel", None)
             st.info("请在左侧配置批量参数（支持起始, 终止, 步长）和固定参数，点击按钮开始仿真。")
+
+    # --- 结果展示（独立于按钮，跨 rerun 保持） ---
+    df = st.session_state.get("forward_results")
+    if df is not None:
+        st.subheader(f"方案计算完成 (共 {len(df)} 组)")
+        st.markdown("#### 完整批量方案明细表")
+        st.caption("页面表格为关键结果摘要；完整明细（含投资、首年发电收入、NPV/回收期等）请点击下方按钮导出 Excel。")
+        st.caption("提示：上表基于最近一次点击「开始批量方案计算」时的参数；修改参数后请重新计算。")
+        st.dataframe(build_display_table(df, "forward"), use_container_width=True, hide_index=True)
+
+        excel_bytes = st.session_state.get("forward_excel")
+        if excel_bytes is None:
+            excel_bytes = dataframe_to_excel_bytes(df, "正向批量明细")
+            st.session_state["forward_excel"] = excel_bytes
+        st.download_button(
+            "⬇️ 导出全量明细表 (Excel)",
+            data=excel_bytes,
+            file_name="batch_valuation_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="forward_download_excel",
+            on_click="ignore",  # 下载时不触发页面重跑
+        )
 
 # ===================== 反推模式：目标 IRR → 综合电价 =====================
 if calc_mode == "🎯 反推电价（目标IRR → 综合电价）":
@@ -544,15 +717,6 @@ if calc_mode == "🎯 反推电价（目标IRR → 综合电价）":
         "除综合电价外，其余参数均保持当前侧边栏设置不变。"
         "输入目标 IRR，通过数值求解反推使该指标恰好达标所需的综合电价（风、光采用同一电价）。"
     )
-
-    def _fmt_pct(x, digits=2):
-        """IRR 百分比格式化，无法计算（nan/None）时显示占位符"""
-        try:
-            if x is None or (isinstance(x, float) and math.isnan(x)):
-                return "—"
-            return f"{x * 100:.{digits}f}%"
-        except (TypeError, ValueError):
-            return "—"
 
     IRR_TYPE_KEY_MAP = {
         "项目税后IRR": 'project_post',
@@ -602,7 +766,7 @@ if calc_mode == "🎯 反推电价（目标IRR → 综合电价）":
                             'pv_equiv_hours': p_equiv,
                             'w_curtail': w_cur,
                             'p_curtail': p_cur,
-                            # 模型按“实际小时数 = 等效小时数 × (1 − 限电率)”计算发电量
+                            # 模型按“测算小时数 = 等效小时数 × (1 − 限电率)”计算发电量
                             'wind_hours': w_equiv * (1 - w_cur),
                             'pv_hours': p_equiv * (1 - p_cur),
                         })
@@ -626,7 +790,7 @@ if calc_mode == "🎯 反推电价（目标IRR → 综合电价）":
                         'wind_mw': wm, 'pv_mw': pm, 'storage_mwh': sm,
                         'wind_equiv_hours': wh, 'pv_equiv_hours': ph,
                         'w_curtail': wc, 'p_curtail': pc,
-                        # 模型按“实际小时数 = 等效小时数 × (1 − 限电率)”计算发电量
+                        # 模型按“测算小时数 = 等效小时数 × (1 − 限电率)”计算发电量
                         'wind_hours': wh * (1 - wc),
                         'pv_hours': ph * (1 - pc),
                     })
@@ -641,54 +805,60 @@ if calc_mode == "🎯 反推电价（目标IRR → 综合电价）":
                 apply_scenario_params(sc)
                 try:
                     sol = solve_comprehensive_price(target_irr, irr_type=irr_type_key)
+                    row = {"序号": i + 1}
+                    row.update(build_scenario_columns(sc))
+                    row["目标IRR类型"] = irr_type_label
+                    row["目标IRR(%)"] = _pct_num(target_irr)
                     if sol['converged']:
-                        results.append({
-                            "序号": i + 1,
-                            "风电规模(MW)": sc['wind_mw'],
-                            "光伏规模(MW)": sc['pv_mw'],
-                            "储能规模(MWh)": sc['storage_mwh'],
-                            "风电实际小时数(h)": round(sc.get('wind_hours', 0.0), 2),
-                            "光伏实际小时数(h)": round(sc.get('pv_hours', 0.0), 2),
-                            "目标IRR类型": irr_type_label,
-                            "目标IRR": f"{target_irr * 100:.2f}%",
-                            "反推综合电价(元/kWh)": f"{sol['price']:.6f}",
-                            "验证-目标IRR": _fmt_pct(sol['achieved_irr'], 4),
-                            "验证-项目税后IRR": _fmt_pct(sol['P_post_irr_result']),
-                            "验证-项目税前IRR": _fmt_pct(sol['P_pre_irr_result']),
-                            "验证-资本金税后IRR": _fmt_pct(sol['C_post_irr_result']),
-                            "验证-资本金税前IRR": _fmt_pct(sol['C_pre_irr_result']),
-                            "度电成本LCOE(元/kWh)": f"{sol['LCOE']:.4f}" if sol['LCOE'] is not None else "—",
-                            "备注": ""
-                        })
+                        row["反推综合电价(元/kWh)"] = _round_num(sol.get('price'), 6)
+                        row.update(build_investment_columns(sol.get('investment_results')))
+                        row.update(build_generation_columns(sol.get('annual_profit_data')))
+                        row.update(build_financial_columns(sol.get('final_metrics')))
+                        row["备注"] = ""
                     else:
-                        results.append({
-                            "序号": i + 1,
-                            "风电规模(MW)": sc['wind_mw'],
-                            "光伏规模(MW)": sc['pv_mw'],
-                            "储能规模(MWh)": sc['storage_mwh'],
-                            "风电实际小时数(h)": round(sc.get('wind_hours', 0.0), 2),
-                            "光伏实际小时数(h)": round(sc.get('pv_hours', 0.0), 2),
-                            "目标IRR类型": irr_type_label,
-                            "目标IRR": f"{target_irr * 100:.2f}%",
-                            "反推综合电价(元/kWh)": "—",
-                            "验证-目标IRR": "—",
-                            "验证-项目税后IRR": "—",
-                            "验证-项目税前IRR": "—",
-                            "验证-资本金税后IRR": "—",
-                            "验证-资本金税前IRR": "—",
-                            "度电成本LCOE(元/kWh)": "—",
-                            "备注": sol['message']
-                        })
+                        row["反推综合电价(元/kWh)"] = None
+                        row.update(build_investment_columns(sol.get('investment_results')))
+                        row.update(build_generation_columns(sol.get('annual_profit_data')))
+                        row.update(build_financial_columns(None))
+                        row["备注"] = sol.get('message', '')
+                    results.append(row)
                 except Exception as e:
                     st.warning(f"方案 {i + 1} 反推失败: {e}")
 
                 progress_bar.progress((i + 1) / num_scenarios)
 
-            st.subheader(f"反推完成 (共 {len(results)} 组)")
-            df = pd.DataFrame(results)
-            st.markdown("#### 反推结果明细表")
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            df_result = pd.DataFrame(results)
+            if df_result.empty:
+                st.session_state.pop("reverse_results", None)
+                st.session_state.pop("reverse_excel", None)
+                st.error("本次反推未产生有效结果，请检查参数或查看上方提示。")
+            else:
+                # 结果存入 session_state：页面重跑、点击下载后仍保留，不会回退
+                st.session_state["reverse_results"] = df_result
+                st.session_state["reverse_excel"] = dataframe_to_excel_bytes(df_result, "反推批量明细")
+        else:
+            st.session_state.pop("reverse_results", None)
+            st.session_state.pop("reverse_excel", None)
 
-            # 导出 CSV
-            csv = df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("导出反推结果明细表", csv, "reverse_price_results.csv", "text/csv")
+    # --- 结果展示（独立于按钮，跨 rerun 保持） ---
+    df = st.session_state.get("reverse_results")
+    if df is not None:
+        st.subheader(f"反推完成 (共 {len(df)} 组)")
+        st.markdown("#### 反推结果明细表")
+        st.caption("页面表格为关键结果摘要；完整明细（含投资、首年发电收入、NPV/回收期等）请点击下方按钮导出 Excel。")
+        st.caption("提示：上表基于最近一次点击「开始反推综合电价」时的参数；修改参数后请重新计算。")
+        st.dataframe(build_display_table(df, "reverse"), use_container_width=True, hide_index=True)
+
+        excel_bytes = st.session_state.get("reverse_excel")
+        if excel_bytes is None:
+            excel_bytes = dataframe_to_excel_bytes(df, "反推批量明细")
+            st.session_state["reverse_excel"] = excel_bytes
+        st.download_button(
+            "⬇️ 导出全量明细表 (Excel)",
+            data=excel_bytes,
+            file_name="reverse_price_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="reverse_download_excel",
+            on_click="ignore",  # 下载时不触发页面重跑
+        )
