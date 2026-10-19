@@ -109,6 +109,41 @@ def parse_range(input_str):
     except ValueError:
         return []
 
+def _to_float(value, default=None):
+    """安全转 float：空值/非数字/NaN 时返回默认值。"""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    if math.isnan(f):
+        return default
+    return f
+
+def _fmt_hour_list(vals, max_show=8):
+    """把小时数列表格式化为紧凑字符串（用于侧边栏实时预览）。"""
+    if not vals:
+        return "—"
+    shown = ", ".join(f"{v:g}" for v in vals[:max_show])
+    if len(vals) > max_show:
+        shown += f" …（共 {len(vals)} 个）"
+    return shown
+
+def _actual_hours(equiv_list, curtailment):
+    """实际小时数 = 等效小时数 × (1 − 限电率)。
+    curtailment 可为单个限电率（小数）或限电率列表；多个时返回去重排序后的组合结果。
+    """
+    rates = curtailment if isinstance(curtailment, (list, tuple)) else [curtailment]
+    out = set()
+    for r in rates:
+        rate = _to_float(r, 0.0) or 0.0
+        for v in equiv_list:
+            out.add(round(v * (1 - rate), 4))
+    return sorted(out)
+
+def _pct_to_fraction(vals):
+    """把百分数列表（0~100）转换为小数列表（0~1），并做上下限保护。"""
+    return [min(max(_to_float(v, 0.0) or 0.0, 0.0), 100.0) / 100.0 for v in vals]
+
 @st.cache_data
 def load_table(file_bytes, filename):
     """读取上传的参数表（缓存避免每次交互重复解析）"""
@@ -120,10 +155,17 @@ def load_table(file_bytes, filename):
 REQUIRED_TABLE_COLUMNS = {
     '风电容量 (MW)': ['风电容量(MW)', '风电容量', '风电规模(MW)'],
     '光伏容量 (MW)': ['光伏容量(MW)', '光伏容量', '光伏规模(MW)'],
-    '风电利用小时数 (h)': ['风电利用小时数(h)', '风电利用小时'],
-    '光伏利用小时数 (h)': ['光伏利用小时数(h)', '光伏利用小时'],
+    '风电利用小时数 (h)': ['风电利用小时数(h)', '风电利用小时', '风电等效利用小时数(h)', '风电等效利用小时数'],
+    '光伏利用小时数 (h)': ['光伏利用小时数(h)', '光伏利用小时', '光伏等效利用小时数(h)', '光伏等效利用小时数'],
     '储能容量 (MWh)': ['储能容量(MWh)', '储能容量', '储能规模(MWh)'],
     '综合电价': ['综合上网电价', '电价'],
+}
+
+# 可选列：表格中存在则读取，缺失时按默认值处理（限电率缺省为 0，即不限电）
+# 注意：限电率以百分数录入（5 表示 5%），与侧边栏保持一致。
+OPTIONAL_TABLE_COLUMNS = {
+    '风电限电率': ['风电限电率', '风电弃电率', '风电限电比例', '风电限电率(%)', '风电限电率（%）'],
+    '光伏限电率': ['光伏限电率', '光伏弃电率', '光伏限电比例', '光伏限电率(%)', '光伏限电率（%）'],
 }
 
 # 反推模式下无需综合电价列（该列由求解器反推得出）
@@ -131,26 +173,75 @@ REQUIRED_TABLE_COLUMNS_REVERSE = {
     k: v for k, v in REQUIRED_TABLE_COLUMNS.items() if k != '综合电价'
 }
 
-def match_table_columns(df, required=None):
+def match_table_columns(df, required=None, optional=None):
     """
-    将表格列名映射到标准列名；无法识别的返回缺失清单。
+    将表格列名映射到标准列名；无法识别的必需列会出现在 missing 清单中。
     兼容：多余空格、全角括号（）、部分常见别名。
     required: 自定义必需列集合（默认使用正算模式的全量必需列）。
+    optional: 可选列集合（默认使用 OPTIONAL_TABLE_COLUMNS），缺失不报错。
+    返回 (col_map, missing, opt_map)。
     """
     required_cols = REQUIRED_TABLE_COLUMNS if required is None else required
+    optional_cols = OPTIONAL_TABLE_COLUMNS if optional is None else optional
 
     def norm(c):
         return str(c).replace('（', '(').replace('）', ')').replace(' ', '').strip()
 
     norm_to_actual = {norm(c): c for c in df.columns}
-    col_map = {}
-    for std_name, aliases in required_cols.items():
-        for cand in [std_name] + aliases:
-            if cand in norm_to_actual:
-                col_map[std_name] = norm_to_actual[cand]
-                break
+
+    def build_map(cols):
+        m = {}
+        for std_name, aliases in cols.items():
+            for cand in [std_name] + aliases:
+                if norm(cand) in norm_to_actual:
+                    m[std_name] = norm_to_actual[norm(cand)]
+                    break
+        return m
+
+    col_map = build_map(required_cols)
+    opt_map = build_map(optional_cols)
     missing = [k for k in required_cols if k not in col_map]
-    return col_map, missing
+    return col_map, missing, opt_map
+
+# --- 参数表模板（供下载后手动调整再上传）---
+TEMPLATE_COLUMNS = [
+    '方案名称', '风电容量 (MW)', '光伏容量 (MW)', '储能容量 (MWh)',
+    '风电利用小时数 (h)', '光伏利用小时数 (h)',
+    '风电限电率 (%)', '光伏限电率 (%)', '综合电价',
+]
+
+@st.cache_data
+def build_template_bytes():
+    """生成参数表模板（含“参数模板”与“填写说明”两个工作表）的 xlsx 字节流。"""
+    template_df = pd.DataFrame([
+        {'方案名称': '示例方案1', '风电容量 (MW)': 100, '光伏容量 (MW)': 100, '储能容量 (MWh)': 50,
+         '风电利用小时数 (h)': 1500, '光伏利用小时数 (h)': 1500, '风电限电率 (%)': 5, '光伏限电率 (%)': 3, '综合电价': 0.33},
+        {'方案名称': '示例方案2', '风电容量 (MW)': 200, '光伏容量 (MW)': 150, '储能容量 (MWh)': 100,
+         '风电利用小时数 (h)': 1800, '光伏利用小时数 (h)': 1600, '风电限电率 (%)': 8, '光伏限电率 (%)': 5, '综合电价': 0.35},
+        {'方案名称': '示例方案3', '风电容量 (MW)': 300, '光伏容量 (MW)': 200, '储能容量 (MWh)': 150,
+         '风电利用小时数 (h)': 2000, '光伏利用小时数 (h)': 1700, '风电限电率 (%)': 0, '光伏限电率 (%)': 0, '综合电价': 0.40},
+    ], columns=TEMPLATE_COLUMNS)
+
+    notes_df = pd.DataFrame([
+        ['方案名称', '可选', '仅作标识，不参与计算；可自由增删。'],
+        ['风电容量 (MW)', '必填', '风电场装机容量，单位 MW。'],
+        ['光伏容量 (MW)', '必填', '光伏电站装机容量，单位 MW。'],
+        ['储能容量 (MWh)', '必填', '储能配置容量，单位 MWh。'],
+        ['风电利用小时数 (h)', '必填', '风电年等效利用小时数（未扣限电）。'],
+        ['光伏利用小时数 (h)', '必填', '光伏首年利用小时数（未扣限电）。'],
+        ['风电限电率 (%)', '可选', '百分数（5 表示 5%），取值范围 0~100；缺省按 0 处理。'],
+        ['光伏限电率 (%)', '可选', '百分数（3 表示 3%），取值范围 0~100；缺省按 0 处理。'],
+        ['综合电价', '正算必填', '含税综合上网电价，单位 元/kWh；反推模式下无需该列。'],
+        ['实际小时数', '自动派生', '实际小时数 = 等效小时数 × (1 − 限电率)，由程序自动计算，无需填写。'],
+        ['格式说明', '—', '支持 .xlsx / .csv；第 1 行须为表头，列名建议与模板保持一致（程序会自动忽略全/半角括号与空格差异）。'],
+    ], columns=['列名', '是否必填', '说明'])
+
+    bio = io.BytesIO()
+    with pd.ExcelWriter(bio, engine='openpyxl') as writer:
+        template_df.to_excel(writer, index=False, sheet_name='参数模板')
+        notes_df.to_excel(writer, index=False, sheet_name='填写说明')
+    return bio.getvalue()
+
 
 # --- 侧边栏：参数输入模式切换 ---
 st.sidebar.header("📋 参数配置")
@@ -158,6 +249,14 @@ input_mode = st.sidebar.radio("选择输入模式", ["表格上传", "手动步�
 
 if input_mode == "表格上传":
     uploaded_file = st.sidebar.file_uploader("上传项目参数表 (Excel/CSV)", type=["xlsx", "csv"])
+    st.sidebar.download_button(
+        "⬇️ 下载参数表模板 (Excel)",
+        data=build_template_bytes(),
+        file_name="批量计算参数模板.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        help="下载标准模板，按“参数模板”工作表填写后上传；限电率等列请勿改名。",
+    )
     if uploaded_file:
         try:
             input_df = load_table(uploaded_file.getvalue(), uploaded_file.name)
@@ -169,12 +268,26 @@ if input_mode == "表格上传":
         input_df = None
 else:
     # 保留原来的 parse_range 输入逻辑（可选）
-    with st.sidebar.expander("1. 批量遍历参数 (起始, 终止, 步长)", expanded=True):
+    with st.sidebar.expander("1. 批量计算参数 (起始, 终止, 步长)", expanded=True):
         w_scale_in = st.text_input("风电装机规模 (MW)", "100")
         p_scale_in = st.text_input("光伏装机规模 (MW)", "100")
         s_scale_in = st.text_input("储能配置容量 (MWh)", "50")
+        w_hours_in = st.text_input("风电等效利用小时数 (h)", "1500")
+        p_hours_in = st.text_input("光伏等效利用小时数 (h)", "1500")
         w_price_in = st.text_input("风电含税电价 (元/kWh)", "0.33")
         p_price_in = st.text_input("光伏含税电价 (元/kWh)", "0.33")
+        # 限电率：支持“起始, 终止, 步长”批量遍历（百分数，5 表示 5%）
+        w_curt_in = st.text_input("风电限电率 (%)", "0", help="支持批量：如 0, 20, 5 表示 0%、5%、…、20%。")
+        p_curt_in = st.text_input("光伏限电率 (%)", "0", help="支持批量：如 0, 20, 5 表示 0%、5%、…、20%。")
+        # 实际小时数 = 等效小时数 × (1 − 限电率)，实时预览
+        _w_equiv_preview = parse_range(w_hours_in)
+        _p_equiv_preview = parse_range(p_hours_in)
+        _w_curt_preview = _pct_to_fraction(parse_range(w_curt_in))
+        _p_curt_preview = _pct_to_fraction(parse_range(p_curt_in))
+        st.caption("**实际小时数 = 等效小时数 × (1 − 限电率)**")
+        st.caption(f"风电实际小时数：{_fmt_hour_list(_actual_hours(_w_equiv_preview, _w_curt_preview))}")
+        st.caption(f"光伏实际小时数：{_fmt_hour_list(_actual_hours(_p_equiv_preview, _p_curt_preview))}")
+
 
 # 2. 投资与资金参数 (固定值)
 with st.sidebar.expander("2. 投资与资金参数 (固定值)"):
@@ -183,12 +296,12 @@ with st.sidebar.expander("2. 投资与资金参数 (固定值)"):
     s_unit_inv = st.number_input("储能单位投资 (元/Wh)", value=float(pp.INVESTMENT_PARAMS['energy_storage_unit_investment_per_wh']), step=0.1)
     other_inv = st.number_input("其他非固定资产投资 (万元)", value=float(pp.INVESTMENT_PARAMS['other_non_fixed_asset_investment_million_yuan']), step=10.0)
     
-    cap_ratio = st.number_input("资本金比例", value=float(pp.INVESTMENT_PARAMS['capital_ratio']), format="%.4f", step=0.01)
-    l_rate = st.number_input("长期贷款利率", value=float(pp.INVESTMENT_PARAMS['long_term_loan_rate']), format="%.4f", step=0.0001)
-    s_rate = st.number_input("短期贷款利率", value=float(pp.INVESTMENT_PARAMS['short_term_loan_rate']), format="%.4f", step=0.0001)
+    cap_ratio_pct = st.number_input("资本金比例 (%)", value=float(pp.INVESTMENT_PARAMS['capital_ratio']) * 100, format="%.2f", step=1.0, min_value=0.0, max_value=100.0)
+    l_rate_pct = st.number_input("长期贷款利率 (%)", value=float(pp.INVESTMENT_PARAMS['long_term_loan_rate']) * 100, format="%.4f", step=0.05)
+    s_rate_pct = st.number_input("短期贷款利率 (%)", value=float(pp.INVESTMENT_PARAMS['short_term_loan_rate']) * 100, format="%.4f", step=0.05)
     
     work_cap_kw = st.number_input("单位流动资金 (元/kW)", value=float(pp.INVESTMENT_PARAMS['working_capital_per_kw']), step=1.0)
-    self_work_ratio = st.number_input("自有流动资金比例", value=float(pp.INVESTMENT_PARAMS['self_owned_working_capital_ratio']), format="%.4f", step=0.01)
+    self_work_ratio_pct = st.number_input("自有流动资金比例 (%)", value=float(pp.INVESTMENT_PARAMS['self_owned_working_capital_ratio']) * 100, format="%.2f", step=1.0, min_value=0.0, max_value=100.0)
     
     repay_start = st.number_input("开始还款年份", value=int(pp.INVESTMENT_PARAMS['repayment_start_year']), step=1)
     repay_period = st.number_input("贷款偿还期限 (年)", value=int(pp.INVESTMENT_PARAMS['repayment_period']), step=1)
@@ -206,25 +319,23 @@ with st.sidebar.expander("3. 经营成本与设备更换 (固定值)"):
     replace_y2 = st.number_input("设备第二次更换年份", value=int(pp.OPERATING_COST_PARAMS.get('equipment_replacement_S_year', 14)), step=1)
     replace_price = st.number_input("设备更换单价 (元/Wh)", value=float(pp.OPERATING_COST_PARAMS['equipment_replacement_unit_price_per_wh']), step=0.01)
 
-# 4. 发电小时数与衰减 (固定值)
-with st.sidebar.expander("4. 发电与年限参数 (固定值)"):
-    w_h = st.number_input("风电等效利用小时数", value=float(pp.POWER_GENERATION_PARAMS['wind_hours']), step=10.0)
-    p_h = st.number_input("光伏首年利用小时数", value=float(pp.POWER_GENERATION_PARAMS['pv_first_year_hours']), step=10.0)
-    f_decline = st.number_input("首年衰减率", value=float(pp.POWER_GENERATION_PARAMS['first_year_decline']), format="%.4f", step=0.001)
-    a_decline = st.number_input("后续逐年衰减率", value=float(pp.POWER_GENERATION_PARAMS['annual_decline']), format="%.4f", step=0.0001)
+# 4. 光伏衰减与运营年限 (固定值)：小时数已移至“1. 批量计算参数”
+with st.sidebar.expander("4. 光伏衰减与运营年限 (固定值)"):
+    f_decline_pct = st.number_input("光伏首年衰减率 (%)", value=float(pp.POWER_GENERATION_PARAMS['first_year_decline']) * 100, format="%.3f", step=0.1, min_value=0.0, max_value=100.0)
+    a_decline_pct = st.number_input("光伏后续逐年衰减率 (%)", value=float(pp.POWER_GENERATION_PARAMS['annual_decline']) * 100, format="%.3f", step=0.05, min_value=0.0, max_value=100.0)
     
     op_y_w = st.number_input("风电运营年限", value=int(pp.OPERATION_YEARS['wind']), step=1)
     op_y_p = st.number_input("光伏运营年限", value=int(pp.OPERATION_YEARS['pv']), step=1)
 
 # 5. 税率/折旧/残值 (固定值)
 with st.sidebar.expander("5. 税率、折旧与残值 (固定值)"):
-    vat = st.number_input("增值税率", value=float(pp.TAX_RATES['vat_rate']), step=0.01)
-    inc_std = st.number_input("标准所得税率", value=float(pp.TAX_RATES['standard_income_tax_rate']), step=0.01)
+    vat_pct = st.number_input("增值税率 (%)", value=float(pp.TAX_RATES['vat_rate']) * 100, format="%.2f", step=0.5, min_value=0.0, max_value=100.0)
+    inc_std_pct = st.number_input("标准所得税率 (%)", value=float(pp.TAX_RATES['standard_income_tax_rate']) * 100, format="%.2f", step=0.5, min_value=0.0, max_value=100.0)
     
-    w_dep = st.number_input("风电折旧率", value=float(pp.DEPRECIATION_RATES['wind_depreciation_rate']), format="%.4f", step=0.0001)
-    p_dep = st.number_input("光伏折旧率", value=float(pp.DEPRECIATION_RATES['pv_depreciation_rate']), format="%.4f", step=0.0001)
-    s_dep = st.number_input("储能折旧率", value=float(pp.DEPRECIATION_RATES['energy_storage_depreciation_rate']), format="%.4f", step=0.0001)
-    salvage = st.number_input("统一残值率", value=float(pp.SALVAGE_RATES['wind_salvage_rate']), step=0.01)
+    w_dep_pct = st.number_input("风电折旧率 (%)", value=float(pp.DEPRECIATION_RATES['wind_depreciation_rate']) * 100, format="%.3f", step=0.05, min_value=0.0, max_value=100.0)
+    p_dep_pct = st.number_input("光伏折旧率 (%)", value=float(pp.DEPRECIATION_RATES['pv_depreciation_rate']) * 100, format="%.3f", step=0.05, min_value=0.0, max_value=100.0)
+    s_dep_pct = st.number_input("储能折旧率 (%)", value=float(pp.DEPRECIATION_RATES['energy_storage_depreciation_rate']) * 100, format="%.3f", step=0.05, min_value=0.0, max_value=100.0)
+    salvage_pct = st.number_input("统一残值率 (%)", value=float(pp.SALVAGE_RATES['wind_salvage_rate']) * 100, format="%.2f", step=0.5, min_value=0.0, max_value=100.0)
 
 # --- 将侧边栏固定的静态参数同步到全局参数模块（与具体方案无关，只需设置一次） ---
 def sync_static_params():
@@ -233,11 +344,11 @@ def sync_static_params():
         'pv_unit_investment_per_wp': p_unit_inv,
         'energy_storage_unit_investment_per_wh': s_unit_inv,
         'other_non_fixed_asset_investment_million_yuan': other_inv,
-        'capital_ratio': cap_ratio,
-        'long_term_loan_rate': l_rate,
-        'short_term_loan_rate': s_rate,
+        'capital_ratio': cap_ratio_pct / 100,
+        'long_term_loan_rate': l_rate_pct / 100,
+        'short_term_loan_rate': s_rate_pct / 100,
         'working_capital_per_kw': work_cap_kw,
-        'self_owned_working_capital_ratio': self_work_ratio,
+        'self_owned_working_capital_ratio': self_work_ratio_pct / 100,
         'repayment_start_year': repay_start,
         'repayment_period': repay_period
     })
@@ -258,21 +369,23 @@ def sync_static_params():
     })
 
     pp.POWER_GENERATION_PARAMS.update({
-        'first_year_decline': f_decline,
-        'annual_decline': a_decline
+        'first_year_decline': f_decline_pct / 100,
+        'annual_decline': a_decline_pct / 100
     })
+    # 保持派生的“光致衰减 LID”与上述衰减率同步
+    pp.POWER_GENERATION_PARAMS['photonic_decline'] = f_decline_pct / 100 - a_decline_pct / 100
 
-    pp.TAX_RATES['vat_rate'] = vat
-    pp.TAX_RATES['standard_income_tax_rate'] = inc_std
+    pp.TAX_RATES['vat_rate'] = vat_pct / 100
+    pp.TAX_RATES['standard_income_tax_rate'] = inc_std_pct / 100
     pp.DEPRECIATION_RATES.update({
-        'wind_depreciation_rate': w_dep,
-        'pv_depreciation_rate': p_dep,
-        'energy_storage_depreciation_rate': s_dep
+        'wind_depreciation_rate': w_dep_pct / 100,
+        'pv_depreciation_rate': p_dep_pct / 100,
+        'energy_storage_depreciation_rate': s_dep_pct / 100
     })
     pp.SALVAGE_RATES.update({
-        'wind_salvage_rate': salvage,
-        'pv_salvage_rate': salvage,
-        'energy_storage_salvage_rate': salvage
+        'wind_salvage_rate': salvage_pct / 100,
+        'pv_salvage_rate': salvage_pct / 100,
+        'energy_storage_salvage_rate': salvage_pct / 100
     })
     pp.OPERATION_YEARS.update({'wind': op_y_w, 'pv': op_y_p})
 
@@ -307,41 +420,67 @@ if calc_mode == "⚡ 正向计算（电价 → IRR）":
 
         if input_mode == "表格上传":
             if input_df is not None:
-                col_map, missing = match_table_columns(input_df)
+                col_map, missing, opt_map = match_table_columns(input_df)
                 if missing:
                     st.error(
                         f"表格缺少必需列: {missing}。"
                         f"当前表格的列为: {list(input_df.columns)}，请修改表头后重新上传。"
                     )
                 else:
-                    input_df = input_df.rename(columns={v: k for k, v in col_map.items()})
+                    rename_map = {v: k for k, v in col_map.items()}
+                    rename_map.update({v: k for k, v in opt_map.items()})
+                    input_df = input_df.rename(columns=rename_map)
+                    has_w_cur = '风电限电率' in input_df.columns
+                    has_p_cur = '光伏限电率' in input_df.columns
                     for _, row in input_df.iterrows():
+                        w_equiv = _to_float(row['风电利用小时数 (h)'], 0.0) or 0.0
+                        p_equiv = _to_float(row['光伏利用小时数 (h)'], 0.0) or 0.0
+                        # 表格中的限电率为百分数（5 表示 5%），换算成小数参与计算
+                        w_cur = ((_to_float(row['风电限电率'], 0.0) or 0.0) / 100.0) if has_w_cur else 0.0
+                        p_cur = ((_to_float(row['光伏限电率'], 0.0) or 0.0) / 100.0) if has_p_cur else 0.0
                         scenarios.append({
                             'wind_mw': row['风电容量 (MW)'],
                             'pv_mw': row['光伏容量 (MW)'],
-                            'wind_hours': row['风电利用小时数 (h)'],
-                            'pv_hours': row['光伏利用小时数 (h)'],
-                            'storage_mwh': row['储能容量 (MWh)'], # 或 row['储能容量 (kWh)']/1000
+                            'storage_mwh': row['储能容量 (MWh)'],  # 或 row['储能容量 (kWh)']/1000
+                            'wind_equiv_hours': w_equiv,
+                            'pv_equiv_hours': p_equiv,
+                            'w_curtail': w_cur,
+                            'p_curtail': p_cur,
+                            # 模型按“实际小时数 = 等效小时数 × (1 − 限电率)”计算发电量
+                            'wind_hours': w_equiv * (1 - w_cur),
+                            'pv_hours': p_equiv * (1 - p_cur),
                             'w_price': row['综合电价'],
                             'p_price': row['综合电价'],
                         })
             else:
                 st.error("请先上传表格文件！")
         else:
-            # 解析批量范围输入
+            # 解析批量范围输入（规模、等效小时数、电价均支持“起始, 终止, 步长”）
             w_list = parse_range(w_scale_in)
             p_list = parse_range(p_scale_in)
             s_list = parse_range(s_scale_in)
+            wh_list = parse_range(w_hours_in)
+            ph_list = parse_range(p_hours_in)
+            wc_list = _pct_to_fraction(parse_range(w_curt_in))
+            pc_list = _pct_to_fraction(parse_range(p_curt_in))
             wp_list = parse_range(w_price_in)
             pp_list = parse_range(p_price_in)
             # 组合所有方案
-            combinations = list(itertools.product(w_list, p_list, s_list, wp_list, pp_list))
+            combinations = list(itertools.product(w_list, p_list, s_list, wh_list, ph_list, wc_list, pc_list, wp_list, pp_list))
 
             if not combinations:
                 st.error("无法解析参数组合，请检查输入格式（应为：起始, 终止, 步长）。")
             else:
-                for wm, pm, sm, wp, pp_val in combinations:
-                    scenarios.append({'wind_mw': wm, 'pv_mw': pm, 'storage_mwh': sm, 'wind_hours': w_h, 'pv_hours': p_h, 'w_price': wp, 'p_price': pp_val})
+                for wm, pm, sm, wh, ph, wc, pc, wp, pp_val in combinations:
+                    scenarios.append({
+                        'wind_mw': wm, 'pv_mw': pm, 'storage_mwh': sm,
+                        'wind_equiv_hours': wh, 'pv_equiv_hours': ph,
+                        'w_curtail': wc, 'p_curtail': pc,
+                        # 模型按“实际小时数 = 等效小时数 × (1 − 限电率)”计算发电量
+                        'wind_hours': wh * (1 - wc),
+                        'pv_hours': ph * (1 - pc),
+                        'w_price': wp, 'p_price': pp_val,
+                    })
 
         if scenarios:
             # --- 同步侧边栏固定的静态参数（与具体方案无关，只需设置一次，移出循环以提升性能） ---
@@ -369,6 +508,8 @@ if calc_mode == "⚡ 正向计算（电价 → IRR）":
                         "风电规模(MW)": sc['wind_mw'],
                         "光伏规模(MW)": sc['pv_mw'],
                         "储能规模(MWh)": sc['storage_mwh'],
+                        "风电实际小时数(h)": round(sc.get('wind_hours', 0.0), 2),
+                        "光伏实际小时数(h)": round(sc.get('pv_hours', 0.0), 2),
                         "风电电价": sc['w_price'],
                         "光伏电价": sc['p_price'],
                         "项目税后IRR": f"{m['P_post_irr_result']*100:.2f}%",
@@ -434,36 +575,61 @@ if calc_mode == "🎯 反推电价（目标IRR → 综合电价）":
 
         if input_mode == "表格上传":
             if input_df is not None:
-                col_map, missing = match_table_columns(input_df, required=REQUIRED_TABLE_COLUMNS_REVERSE)
+                col_map, missing, opt_map = match_table_columns(input_df, required=REQUIRED_TABLE_COLUMNS_REVERSE)
                 if missing:
                     st.error(
                         f"表格缺少必需列: {missing}。"
                         f"当前表格的列为: {list(input_df.columns)}，请修改表头后重新上传。"
                     )
                 else:
-                    input_df = input_df.rename(columns={v: k for k, v in col_map.items()})
+                    rename_map = {v: k for k, v in col_map.items()}
+                    rename_map.update({v: k for k, v in opt_map.items()})
+                    input_df = input_df.rename(columns=rename_map)
+                    has_w_cur = '风电限电率' in input_df.columns
+                    has_p_cur = '光伏限电率' in input_df.columns
                     for _, row in input_df.iterrows():
                         # 反推模式下表格中的综合电价列不参与计算（电价由求解得出）
+                        w_equiv = _to_float(row['风电利用小时数 (h)'], 0.0) or 0.0
+                        p_equiv = _to_float(row['光伏利用小时数 (h)'], 0.0) or 0.0
+                        # 表格中的限电率为百分数（5 表示 5%），换算成小数参与计算
+                        w_cur = ((_to_float(row['风电限电率'], 0.0) or 0.0) / 100.0) if has_w_cur else 0.0
+                        p_cur = ((_to_float(row['光伏限电率'], 0.0) or 0.0) / 100.0) if has_p_cur else 0.0
                         scenarios.append({
                             'wind_mw': row['风电容量 (MW)'],
                             'pv_mw': row['光伏容量 (MW)'],
-                            'wind_hours': row['风电利用小时数 (h)'],
-                            'pv_hours': row['光伏利用小时数 (h)'],
                             'storage_mwh': row['储能容量 (MWh)'],
+                            'wind_equiv_hours': w_equiv,
+                            'pv_equiv_hours': p_equiv,
+                            'w_curtail': w_cur,
+                            'p_curtail': p_cur,
+                            # 模型按“实际小时数 = 等效小时数 × (1 − 限电率)”计算发电量
+                            'wind_hours': w_equiv * (1 - w_cur),
+                            'pv_hours': p_equiv * (1 - p_cur),
                         })
             else:
                 st.error("请先上传表格文件！")
         else:
-            # 手动模式：电价输入不参与反推，仅按规模组合遍历
+            # 手动模式：电价输入不参与反推，按规模与等效小时数组合遍历
             w_list = parse_range(w_scale_in)
             p_list = parse_range(p_scale_in)
             s_list = parse_range(s_scale_in)
-            combinations = list(itertools.product(w_list, p_list, s_list))
+            wh_list = parse_range(w_hours_in)
+            ph_list = parse_range(p_hours_in)
+            wc_list = _pct_to_fraction(parse_range(w_curt_in))
+            pc_list = _pct_to_fraction(parse_range(p_curt_in))
+            combinations = list(itertools.product(w_list, p_list, s_list, wh_list, ph_list, wc_list, pc_list))
             if not combinations:
                 st.error("无法解析参数组合，请检查输入格式（应为：起始, 终止, 步长）。")
             else:
-                for wm, pm, sm in combinations:
-                    scenarios.append({'wind_mw': wm, 'pv_mw': pm, 'storage_mwh': sm, 'wind_hours': w_h, 'pv_hours': p_h})
+                for wm, pm, sm, wh, ph, wc, pc in combinations:
+                    scenarios.append({
+                        'wind_mw': wm, 'pv_mw': pm, 'storage_mwh': sm,
+                        'wind_equiv_hours': wh, 'pv_equiv_hours': ph,
+                        'w_curtail': wc, 'p_curtail': pc,
+                        # 模型按“实际小时数 = 等效小时数 × (1 − 限电率)”计算发电量
+                        'wind_hours': wh * (1 - wc),
+                        'pv_hours': ph * (1 - pc),
+                    })
 
         if scenarios:
             sync_static_params()
@@ -481,6 +647,8 @@ if calc_mode == "🎯 反推电价（目标IRR → 综合电价）":
                             "风电规模(MW)": sc['wind_mw'],
                             "光伏规模(MW)": sc['pv_mw'],
                             "储能规模(MWh)": sc['storage_mwh'],
+                            "风电实际小时数(h)": round(sc.get('wind_hours', 0.0), 2),
+                            "光伏实际小时数(h)": round(sc.get('pv_hours', 0.0), 2),
                             "目标IRR类型": irr_type_label,
                             "目标IRR": f"{target_irr * 100:.2f}%",
                             "反推综合电价(元/kWh)": f"{sol['price']:.6f}",
@@ -498,6 +666,8 @@ if calc_mode == "🎯 反推电价（目标IRR → 综合电价）":
                             "风电规模(MW)": sc['wind_mw'],
                             "光伏规模(MW)": sc['pv_mw'],
                             "储能规模(MWh)": sc['storage_mwh'],
+                            "风电实际小时数(h)": round(sc.get('wind_hours', 0.0), 2),
+                            "光伏实际小时数(h)": round(sc.get('pv_hours', 0.0), 2),
                             "目标IRR类型": irr_type_label,
                             "目标IRR": f"{target_irr * 100:.2f}%",
                             "反推综合电价(元/kWh)": "—",
